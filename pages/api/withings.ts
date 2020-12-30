@@ -1,29 +1,85 @@
 import { NextApiRequest, NextApiResponse } from "next";
+import { QueryData, StartEndDate, StartEndYMD } from "../helpers/DataTypes";
+import { MEASURE_URL, SLEEP_URL } from "../helpers/WithingsUrls";
+import {
+  defaultStartDateTime,
+  defaultEndDateTime,
+  getQueryData,
+  getYMD,
+  oneDayInSeconds,
+  addStartEndDate,
+  addStartEndYMD,
+  addMeasureParams,
+  addSleepParams,
+} from "../helpers/QueryParams";
 
-async function external(url: string, config?: object): Promise<withings.DataResult> {
-  const res = await fetch(url, config);
-  const data = await res.json();
-  return data;
-}
+import { postData } from "../helpers/PostData";
 
-async function get(req: NextApiRequest, res: NextApiResponse<string>): Promise<string> {
-  return "Helpful information";
-}
+const downloadData = async (req: NextApiRequest, res: NextApiResponse): Promise<any> => {
+  const { startDate, endDate } = req.body;
+  // Be explicit for types for action and token
+  const token: string = req.body.token;
+  const action: string = req.body.action;
+  const initialStartDate = startDate || defaultStartDateTime;
+  const initialEndDate = endDate || defaultEndDateTime;
 
-// This should be moved to a slug [...] that allows querying different endpoints on Withing's api
-async function post(req: NextApiRequest, res: NextApiResponse<withings.DataResult>): Promise<withings.DataResult> {
- const respone = []
-  // Would make a request to Withings API using external, or similar
-  return null;
-}
+  const queryData: QueryData = getQueryData(action, getYMD(initialStartDate), getYMD(initialEndDate));
 
-export default async function (req: NextApiRequest, res: NextApiResponse<string | withings.DataResult>): Promise<any> {
+  let params = {};
+  let data = [];
+  let promises: Promise<any>[] = [];
+
+  for (let _start: number = initialStartDate; _start <= initialEndDate; _start += oneDayInSeconds) {
+    const _end: number = _start + oneDayInSeconds;
+    const _startEndDate: StartEndDate = addStartEndDate(_start, _end);
+
+    const _startDateYMD: string = getYMD(_start);
+    const _endDateYMD: string = getYMD(_end);
+    const _startEndYMD: StartEndYMD = addStartEndYMD(_startDateYMD, _endDateYMD);
+
+    let url: string;
+    switch (action) {
+      case "measure-intraday":
+        url = MEASURE_URL;
+        params = { action: "getintradayactivity", access_token: token, ...addMeasureParams(), ..._startEndDate };
+        break;
+      case "measure-workouts":
+        url = MEASURE_URL;
+        params = { action: "getworkouts", access_token: token, ...addMeasureParams(), ..._startEndYMD };
+        break;
+      case "sleep-get":
+        url = SLEEP_URL;
+        params = { action: "get", access_token: token, ...addSleepParams(), ..._startEndDate };
+        break;
+    }
+
+    promises.push(
+      new Promise(async (resolve, reject) => {
+        try {
+          postData(url, params).then((result) => {
+            // console.log("result: ", result);
+            // console.log("got result for params: ", params);
+            resolve(result);
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      })
+    );
+  }
+
+  await Promise.all(promises).then((result) => {
+    data.push(result);
+    // console.log("returning data: ", JSON.stringify({ queryData: queryData, remoteResponse: data }));
+    res.status(200).json(JSON.stringify({ queryData: queryData, remoteResponse: data }));
+  });
+};
+
+export default async function (req: NextApiRequest, res: NextApiResponse<string | any>): Promise<any> {
   switch (req.method) {
-    case "GET":
-      res.status(200).send(await get(req, res));
-      break;
     case "POST":
-      res.status(200).json(await post(req, res));
+      await downloadData(req, res);
+      res.end();
       break;
     default:
       res.status(405).end(); //Method Not Allowed
